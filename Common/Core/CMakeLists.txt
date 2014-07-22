@@ -500,6 +500,7 @@ set_source_files_properties(
   vtkWeakPointerBase.cxx
   vtkUnicodeString.cxx
   vtkDataArrayTemplate.h
+  vtkDataArrayPrivate.txx
 
   vtkABI.h
   vtkArrayInterpolate.h
@@ -593,4 +594,4 @@ endif()
 
 vtk_module_library(vtkCommonCore ${Module_SRCS})
 
-target_link_libraries(vtkCommonCore LINK_PRIVATE ${CMAKE_THREAD_LIBS_INIT} LINK_PUBLIC ${VTK_SMP_IMPLEMENTATION_LIBRARIES})
+vtk_module_link_libraries(vtkCommonCore LINK_PRIVATE ${CMAKE_THREAD_LIBS_INIT} LINK_PUBLIC ${VTK_SMP_IMPLEMENTATION_LIBRARIES})

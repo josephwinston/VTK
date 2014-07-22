@@ -1,13 +1,21 @@
 (function ($, GLOBAL) {
     var SELECT_OPTION = '<option value="VALUE">NAME</option>',
     TEMPLATE_CANVAS = '<canvas class="front-renderer"></canvas><canvas class="single-size-back-buffer bg"></canvas><canvas class="back-buffer bg"></canvas>',
-    TEMPLATE_CONTENT = '<div class="header"><span class="vtk-icon-tools toggle"></span><span class="vtk-icon-resize-full-2 reset"></span><span class="vtk-icon-play play"></span><span class="vtk-icon-stop stop"></span></div><div class="parameters"><div class="layer-selector"></div><div class="pipeline"><ul>PIPELINE</ul></div><div class="background">Background<div class="right-control"><ul><li class="color" data-color="#cccccc" style="background: #cccccc"></li><li class="color" data-color="#000000" style="background: #000000"></li><li class="color" data-color="#ffffff" style="background: #ffffff"></li></ul></div></div><div class="fields"><ul><li class="time loop toggle-active"><span class="vtk-icon-clock-1 action title">Time</span><div class="right-control"><span class="value">0</span><span class="vtk-icon-to-start-1 action vcr" data-action="begin"></span><span class="vtk-icon-left-dir action vcr" data-action="previous"></span><span class="vtk-icon-right-dir action vcr" data-action="next"></span><span class="vtk-icon-to-end-1 action vcr" data-action="end"></span></div></li><li class="phi loop toggle-active"><span class="vtk-icon-resize-horizontal-1 action title">Phi</span><div class="right-control"><span class="value">0</span><span class="vtk-icon-to-start-1 action vcr" data-action="begin"></span><span class="vtk-icon-left-dir action vcr" data-action="previous"></span><span class="vtk-icon-right-dir action vcr" data-action="next"></span><span class="vtk-icon-to-end-1 action vcr" data-action="end"></span></div></li><li class="theta toggle-active"><span class="vtk-icon-resize-vertical-1 action title">Theta</span><div class="right-control"><span class="value">0</span><span class="vtk-icon-to-start-1 action vcr" data-action="begin"></span><span class="vtk-icon-left-dir action vcr" data-action="previous"></span><span class="vtk-icon-right-dir action vcr" data-action="next"></span><span class="vtk-icon-to-end-1 action vcr" data-action="end"></span></div></li></ul></div></div>',
+    TEMPLATE_CONTENT = '<div class="header"><span class="vtk-icon-tools toggle"></span><span class="vtk-icon-resize-full-2 reset"></span><span class="vtk-icon-play play"></span><span class="vtk-icon-stop stop"></span></div><div class="parameters"><div class="layer-selector"></div><div class="pipeline-container"><div class="pipeline"><ul>PIPELINE</ul></div><div class="background">Background<div class="right-control"><ul><li class="color" data-color="#cccccc" style="background: #cccccc"></li><li class="color" data-color="#000000" style="background: #000000"></li><li class="color" data-color="#ffffff" style="background: #ffffff"></li></ul></div></div><div class="fields"><ul><li class="time loop toggle-active"><span class="vtk-icon-clock-1 action title">Time</span><div class="right-control"><span class="value">0</span><span class="vtk-icon-to-start-1 action vcr" data-action="begin"></span><span class="vtk-icon-left-dir action vcr" data-action="previous"></span><span class="vtk-icon-right-dir action vcr" data-action="next"></span><span class="vtk-icon-to-end-1 action vcr" data-action="end"></span></div></li><li class="phi loop toggle-active"><span class="vtk-icon-resize-horizontal-1 action title">Phi</span><div class="right-control"><span class="value">0</span><span class="vtk-icon-to-start-1 action vcr" data-action="begin"></span><span class="vtk-icon-left-dir action vcr" data-action="previous"></span><span class="vtk-icon-right-dir action vcr" data-action="next"></span><span class="vtk-icon-to-end-1 action vcr" data-action="end"></span></div></li><li class="theta toggle-active"><span class="vtk-icon-resize-vertical-1 action title">Theta</span><div class="right-control"><span class="value">0</span><span class="vtk-icon-to-start-1 action vcr" data-action="begin"></span><span class="vtk-icon-left-dir action vcr" data-action="previous"></span><span class="vtk-icon-right-dir action vcr" data-action="next"></span><span class="vtk-icon-to-end-1 action vcr" data-action="end"></span></div></li><li class="compute-coverage action"><span>Compute pixel coverage</span><div class="right-control"><span class="vtk-icon-sort-alt-down"/></div></li><li class="progress"><div></div></li></ul></div></div></div>',
     PIPELINE_ENTRY = '<li class="show enabled" data-id="ID"><span class="FRONT_ICON action"></span><span class="label">LABEL</span>CONTROL</li>',
     DIRECTORY_CONTROL = '<span class="vtk-icon-plus-circled right-control action select-layer"></span><ul>CHILDREN</ul>',
     TEMPLATE_SELECTOR = '<div class="head"><span class="title">TITLE</span><span class="vtk-icon-ok action right-control validate-layer"></span></div><ul>LIST</ul>',
-    TEMPLATE_LAYER_CHECK = '<li><input type="checkbox" CHECKED name="ID">NAME</li>';
+    TEMPLATE_LAYER_CHECK = '<li><input type="checkbox" CHECKED name="ID">NAME</li>',
+    // Extract worker url
+    scripts = document.getElementsByTagName('script'),
+    scriptPath = scripts[scripts.length - 1].src.split('/'),
+    workerURL = '/CatalystBrowser/vtkweb-composite-worker.js',
+    NB_RESULT_PER_PAGE = 8;
 
 
+    // Compute worker path
+    scriptPath.pop();
+    workerURL = scriptPath.join('/') + workerURL;
 
     // ========================================================================
     // Helper method
@@ -20,6 +28,606 @@
         relX = x - parentOffset.left,
         relY = y - parentOffset.top;
         return [ relX, relY ];
+    }
+
+    // ------------------------------------------------------------------------
+
+    function createSearchManager(container, data, basepath) {
+        var layerVisibility = {},
+            layer_fields = data.metadata.layer_fields,
+            fields = data.metadata.fields,
+            pipeline = data.metadata.pipeline,
+            args = data.arguments,
+            idList = [],
+            dataList = [],
+            result = [],
+            layerOlderInvalid = true,
+            filePattern = data.name_pattern.replace(/{filename}/g, 'query.json'),
+            timeList = args.hasOwnProperty('time') ? args.time.values : ["0"],
+            phiList = args.hasOwnProperty('phi') ? args.phi.values : ["0"],
+            thetaList = args.hasOwnProperty('theta') ? args.theta.values : ["0"],
+            timeCount = timeList.length,
+            phiCount = phiList.length,
+            thetaCount = thetaList.length,
+            workerList = [],
+            roundRobinWorkerId = 0,
+            formulaSTR = "",
+            layerToLabel = {},
+            nbImages = 1,
+            renderManager = null,
+            layerSeriesData = {},
+            palette = new Rickshaw.Color.Palette();
+
+        // Compute number of images
+        for(var key in layer_fields) {
+            nbImages += layer_fields[key].length;
+        }
+        renderManager = createCompositeManager(container, basepath, data, nbImages);
+
+        // Compute layer to label mapping
+        function updateLayerToLabel(item) {
+            if(item.type === 'layer') {
+                layerToLabel[item.ids[0]] = item.name;
+                layerSeriesData[item.ids[0]] = [];
+            } else {
+                for(var idx in item.children) {
+                    updateLayerToLabel(item.children[idx]);
+                }
+            }
+        }
+        for(var idx in pipeline) {
+            updateLayerToLabel(pipeline[idx]);
+        }
+
+        // Create workers
+        var nbWorker = 5;
+        while(nbWorker--) {
+            var w = new Worker(workerURL);
+            w.onmessage = processResults;
+            workerList.push(w)
+        }
+
+        // ------------------------------
+
+        function processResults(event) {
+            result.push(event.data);
+
+            var nb = $('.result-founds', container);
+            nb.html( Number(nb.html()) + 1);
+
+            if(result.length === idList.length) {
+                updateGraph();
+                working(false);
+            }
+        }
+
+        // ------------------------------
+
+        function updateWorkers(query) {
+            var wQuery = '_' + query,
+            count = workerList.length;
+            while(count--) {
+                workerList[count].postMessage(wQuery);
+            }
+        }
+
+        // ------------------------------
+
+        function triggerWork() {
+            var count = workerList.length;
+            while(count--) {
+                workerList[count].postMessage('w');
+            }
+        }
+
+        // ------------------------------
+
+        function sendData(id, fields, orderCount) {
+            workerList[roundRobinWorkerId].postMessage('d' + id + '|' + JSON.stringify(fields) + '|' + JSON.stringify(orderCount));
+            roundRobinWorkerId = (roundRobinWorkerId + 1) % workerList.length;
+        }
+
+        // ------------------------------
+
+        function sendNumberOfPrixel(number) {
+            var sNumber = 's' + number,
+            count = workerList.length;
+            while(count--) {
+                workerList[count].postMessage(sNumber);
+            }
+        }
+
+        // ------------------------------
+
+        function fetchData(url, fields, count) {
+            $.ajax({
+                url: url,
+                dataType: 'json',
+                success: function( data ) {
+                    sendData(url, fields, data.counts);
+                    if(count == 0) {
+                        sendNumberOfPrixel(data.dimensions[0] * data.dimensions[1]);
+                    }
+                    // Fetch next one
+                    processDataList();
+                },
+                error: function(error) {
+                    console.log("error when trying to download " + url);
+                    console.log(error);
+                }
+            });
+        }
+
+        // ------------------------------
+
+        var processIdx = 0,
+        progressBar = $('.progress > div', container);
+
+        $('.progress', container).show();
+
+        function processDataList() {
+            if(processIdx < idList.length) {
+                fetchData(idList[processIdx], dataList[processIdx], processIdx);
+                processIdx++;
+                progressBar.css('width', Math.floor(95*processIdx / idList.length) + '%');
+
+                // Update page number and possible results
+                $('.result-count', container).html("Found&nbsp;VALUE&nbsp;results.".replace(/VALUE/g, idList.length));
+                $('.result-page-number', container).html(Math.floor(idList.length / NB_RESULT_PER_PAGE) + 1);
+            } else {
+                $('.compute-coverage', container).show();
+                progressBar.parent().hide();
+
+                // Update page number and possible results
+                $('.result-count', container).html("Found&nbsp;VALUE&nbsp;results.".replace(/VALUE/g, idList.length));
+                $('.result-page-number', container).html(Math.floor(idList.length / NB_RESULT_PER_PAGE) + 1);
+            }
+        }
+
+        // ------------------------------
+
+        // Generate image list
+        while(timeCount--) {
+            thetaCount = thetaList.length;
+            var baseURL = basepath + '/' + filePattern.replace(/{time}/g, timeList[timeCount]);
+            while(thetaCount--) {
+                phiCount = phiList.length;
+                var currentURL = baseURL.replace(/{theta}/g, thetaList[thetaCount]);
+                while(phiCount--) {
+                    var url = currentURL.replace(/{phi}/g, phiList[phiCount]);
+                    dataList.push({ time: timeList[timeCount], phi: phiList[phiCount], theta: thetaList[thetaCount]});
+                    idList.push(url);
+                    if(idList.length === 1) {
+                        processDataList();
+                    }
+                }
+            }
+        }
+
+        // ------------------------------
+
+        function search() {
+            result = [];
+            working(true);
+            $('.result-founds', container).html('0');
+            triggerWork();
+        }
+
+        // ------------------------------
+
+        function updateGraph() {
+            var count = result.length, series = [];
+
+            // Update serie data
+            for(var layer in layerSeriesData) {
+                layerSeriesData[layer] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+            }
+            while(count--) {
+                var entry = result[count].count;
+                for(var layer in entry) {
+                    if(layer !== '+') {
+                        var percent = Math.ceil(entry[layer]);
+                        layerSeriesData[layer][percent]++;
+                    }
+                }
+            }
+            // Find max with no coverage
+            var max = 0;
+            for(var layer in layerSeriesData) {
+                count = 101;
+                while(count-- && layerSeriesData[layer][count] === 0) {
+                    // Just wait to find the right index
+                }
+                if(max < count) {
+                    max = count;
+                }
+            }
+            max += 1;
+
+            for(var layer in layerSeriesData) {
+                var name = '(' + layer + ') ' + layerToLabel[layer],
+                data = [],
+                color = palette.color(),
+                hasData = false;
+
+                for(var x = 1; x < max; ++x) {
+                    data.push({x:x, y:layerSeriesData[layer][x]});
+                    if(layerSeriesData[layer][x] > 0) {
+                        hasData = true;
+                    }
+                }
+                if(hasData) {
+                    series.push({ name:name, data:data, color:color });
+                }
+            }
+
+            // Create brand new graph
+            var options = {
+                'renderer': 'area',  // Type of chart [line, area, bar, scatterplot]
+                'stacked' : true,
+                'series': series,
+                'axes': [ "bottom", "left", "top"], // Draw axis on border with scale
+                'chart-padding': [0, 100, 0, 0],   // Graph padding [top, right, bottom, left] in px. Useful to save space for legend
+            };
+            $('.chart-container', container).empty().vtkChart(options);
+        }
+
+
+        function applyQuery(userQuery) {
+            $('.toggle-stats', container).removeClass('stats');
+            // Generate function str
+            // Extract forumla
+            formulaSTR = "var time = Number(obj.fields.time), phi = Number(obj.fields.phi), theta = Number(obj.fields.theta);\n";
+            for(var layer in layerVisibility) {
+                if(layerVisibility[layer]) {
+                    formulaSTR += layer + ' = obj.count.' + layer + ';\n';
+                }
+            }
+
+            var sortQuery = $('.sortby-expression', container).val(),
+            sortFunctionSTR = "function extractValue(obj) {" + formulaSTR + "return " + sortQuery + ";}; return extractValue(a) - extractValue(b);";
+
+            formulaSTR += "return true";
+            if(userQuery.trim().length > 0) {
+                formulaSTR += " && " + userQuery + ';';
+            } else {
+                formulaSTR += ';';
+            }
+
+            // Compile formula and run it on results
+            var func = new Function("obj", formulaSTR),
+            count = result.length,
+            found = 0,
+            finalResults = []
+            sortFunc = new Function(["a","b"], sortFunctionSTR);
+
+            $('.result-count', container).html('Found&nbsp;0&nbsp;result.');
+
+            while(count--) {
+                if(func(result[count])) {
+                   found++;
+                   finalResults.push(result[count]);
+                }
+            }
+
+            if(sortQuery.length > 0) {
+                finalResults.sort(sortFunc);
+            }
+
+            $('.result-count', container).html("Found&nbsp;VALUE&nbsp;results.".replace(/VALUE/g, found));
+
+            var resultContainer = $('.composite-search-results', container).empty();
+            count = finalResults.length,
+            nbPages = Math.floor(count / NB_RESULT_PER_PAGE),
+            pages = [],
+            resultNumber = 0;
+
+            if(count % NB_RESULT_PER_PAGE) {
+                ++nbPages;
+            }
+
+            $('.result-page-number', container).html(nbPages);
+
+            for(var idx = 0; idx < nbPages; ++idx) {
+                var page = $('<div/>', { "class": 'result-page', "data-page": idx });
+                page.appendTo(resultContainer);
+                pages.push(page);
+            }
+            pages[0].addClass('active');
+
+            while(count--) {
+                addResultToUI(finalResults[count], pages[Math.floor(resultNumber++ / NB_RESULT_PER_PAGE)]);
+            }
+
+            // Add render callback
+            // $('.composite-result', container).click(function(){
+            //     var me = $(this), fields = me.attr('data-fields').split(':'),
+            //     time = fields[0], phi = fields[1], theta = fields[2],
+            //     imgURL = drawResult(time, phi, theta);
+            //     $('img', me).attr('src', imgURL);
+            // });
+
+            $('.composite-result', container).dblclick(function(){
+                var me = $(this), fields = me.attr('data-fields').split(':');
+
+                var colorContainer = $('.color.active', container);
+                if(colorContainer) {
+                    container.trigger({
+                        type: "open-view",
+                        query: container.data('pipeline-query'),
+                        args: {
+                            time : fields[0],
+                            phi : fields[1],
+                            theta : fields[2]
+                        },
+                        color: colorContainer.attr('data-color')
+                    });
+                } else {
+                    me.trigger({
+                        type: "open-view",
+                        query: container.data('pipeline-query'),
+                        args: {
+                            time : fields[0],
+                            phi : fields[1],
+                            theta : fields[2]
+                        },
+                    });
+                }
+            });
+            renderActivePage();
+        }
+
+        // ------------------------------
+
+        function renderActivePage(){
+            var processingQueue = [];
+            function renderCompositeResult() {
+                if(processingQueue.length > 0) {
+                    // [ container, time, phi, theta ]
+                    var item = processingQueue.pop(),
+                    time = item[1], phi = item[2], theta = item[3];
+                    if(renderManager.updateFields(time, phi, theta)) {
+                        item[0].attr('src', drawResult(time, phi, theta));
+                        item[4].hide();
+                    } else {
+                        // Not ready yet
+                        processingQueue.push(item);
+                    }
+
+                    // Process remaining
+                    setTimeout(renderCompositeResult, 50);
+                }
+            }
+            $('.result-page.active .composite-result', container).each(function(){
+                var me = $(this), fields = me.attr('data-fields').split(':'),
+                time = fields[0], phi = fields[1], theta = fields[2];
+                processingQueue.push([$('img', me), time, phi, theta, $('ul', me)]);
+            });
+            processingQueue.reverse();
+            $('.result-page-index', container).val(1+Number($('.result-page.active').attr('data-page')));
+            renderCompositeResult();
+        }
+
+        // ------------------------------
+
+        function addResultToUI(obj, container) {
+            var buffer = [], dataFields = "";
+
+            dataFields += obj.fields['time'] + ':' + obj.fields['phi'] + ':' + obj.fields['theta'];
+            for(var field in obj.fields){
+                buffer.push(field + ': ' + obj.fields[field]);
+            }
+            for(var layer in obj.count){
+                if(layer != '+' && obj.count[layer] > 0) {
+                    buffer.push(layerToLabel[layer] + ': ' + Number(obj.count[layer]).toFixed(2) + ' %');
+                }
+            }
+            $("<div/>", {
+                class: 'composite-result',
+                'data-fields': dataFields,
+                html: "<ul><li>" + buffer.join('</li><li>') + "</li></ul><img style='width: 100%;'/>"
+            }).appendTo(container);
+        }
+
+        // ------------------------------
+
+        function updateFields(time, phi, theta) {
+            //console.log('search updateFields: ' + time + " " + phi + " " + theta);
+        }
+
+        // ------------------------------
+
+        function working(working) {
+            $('.working', container).css('visibility', working ? 'visible' : 'hidden');
+            if(working) {
+                $('.search-action[data-action="render"]', container).addClass('disabled');
+            } else {
+                $('.search-action[data-action="render"]', container).removeClass('disabled');
+            }
+        }
+
+        // ------------------------------
+
+        // function updateResult(found, total) {
+        //     var nb = $('.result-founds', container),
+        //     tot = $('.result-total', container);
+
+        //     nb.html( Number(nb.html()) + found);
+        //     tot.html( Number(tot.html()) + total);
+        // }
+
+        // ------------------------------
+
+        function draw() {
+            //console.log('search draw');
+        }
+
+        // ------------------------------
+
+        function drawResult(time, phi, theta) {
+            renderManager.updateFields(time, phi, theta);
+            renderManager.draw();
+
+            // Extract image and use it inside result
+            return renderManager.toDataURL();
+        }
+
+        // ------------------------------
+
+        function updatePipeline(query) {
+            // update Layer Visibility
+            var count = query.length;
+            layerOlderInvalid = false;
+
+            for(var idx = 0; idx < count; idx += 2) {
+                var layer = query[idx],
+                    visibility = (query[idx+1] != '_');
+
+                if(!layerVisibility.hasOwnProperty(layer) || layerVisibility[layer] != visibility) {
+                    layerVisibility[layer] = visibility;
+                    layerOlderInvalid = true;
+                }
+            }
+
+            if(layerOlderInvalid) {
+                updateWorkers(query);
+                $('.chart-container', container).empty();
+                $('.composite-search-results', container).empty();
+                result = [];
+            }
+
+            // Update render manager
+            renderManager.updatePipeline(query);
+        }
+
+        // ------------------------------
+
+        function updateColor(color) {
+            renderManager.updateColor(color);
+        }
+
+        // ------------------------------
+
+        function updatePixelRatio(field, value) {
+
+        }
+
+        // ------------------------------
+
+        function updatePixelRatioOrder(field, isPlus) {
+            console.log('search updatePixelRatioOrder: ' + field + " " + isPlus);
+        }
+
+        // ------------------------------
+
+        return {
+            updateFields:updateFields,
+            draw:draw,
+            updatePipeline:updatePipeline,
+            updateColor:updateColor,
+            updatePixelRatio:updatePixelRatio,
+            updatePixelRatioOrder:updatePixelRatioOrder,
+            search: search,
+            applyQuery: applyQuery,
+            renderActivePage: renderActivePage,
+            layerToLabel: layerToLabel
+        };
+    }
+
+    // ----------------------------------------------------------------------
+
+    function attachTouchListener(container) {
+        var current_button = null, posX, posY, defaultDragButton = 1,
+        isZooming = false, isDragging = false, mouseAction = 'up', target;
+
+        function mobileTouchInteraction(evt) {
+            evt.gesture.preventDefault();
+            switch(evt.type) {
+                case 'drag':
+                    if(isZooming) {
+                        return;
+                    }
+                    current_button = defaultDragButton;
+                    if(mouseAction === 'up') {
+                        mouseAction = "down";
+
+                        target = evt.gesture.target;
+                        isDragging = true;
+                    } else {
+                        mouseAction = "move";
+                    }
+
+                    posX = evt.gesture.touches[0].pageX;
+                    posY = evt.gesture.touches[0].pageY;
+                    break;
+                case 'hold':
+                    if(defaultDragButton === 1) {
+                        defaultDragButton = 2;
+                        //container.html("Pan mode").css('color','#FFFFFF');
+                    } else {
+                        defaultDragButton = 1;
+                        //container.html("Rotation mode").css('color','#FFFFFF');
+                    }
+
+                    break;
+                case 'release':
+                    //container.html('');
+                    current_button = 0;
+                    mouseAction = "up";
+                    isZooming = false;
+                    isDragging = false;
+                    break;
+                case 'doubletap':
+                    container.trigger('resetCamera');
+                    return;
+                case 'pinch':
+                    if(isDragging) {
+                        return;
+                    }
+                    current_button = 3;
+                    if(mouseAction === 'up') {
+                        mouseAction = 'down';
+                        posX = 0;
+                        posY = container.height();
+                        target = evt.gesture.target;
+                        isZooming = true;
+                    } else {
+                        mouseAction = 'move';
+                        posY = container.height() * (1+(evt.gesture.scale-1)/2);
+                    }
+                    break;
+            }
+
+            // Trigger event
+            container.trigger({
+                type: 'mouse',
+                action: mouseAction,
+                current_button: current_button,
+                charCode: '',
+                altKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                metaKey: false,
+                delegateTarget: target,
+                pageX: posX,
+                pageY: posY
+            });
+        }
+
+        // Bind listener to UI container
+        container.hammer({
+            prevent_default : true,
+            prevent_mouseevents : true,
+            transform : true,
+            transform_always_block : true,
+            transform_min_scale : 0.03,
+            transform_min_rotation : 2,
+            drag : true,
+            drag_max_touches : 1,
+            drag_min_distance : 10,
+            swipe : false,
+            hold : true // To switch from rotation to pan
+        }).on("doubletap pinch drag release hold", mobileTouchInteraction);
     }
 
     // ------------------------------------------------------------------------
@@ -66,6 +674,80 @@
 
                 // Redraw the image in the canvas
                 redrawImage();
+            });
+
+            // Handle mobile
+            attachTouchListener(element);
+            element.bind('mouse', function(e){
+                // action: mouseAction,
+                // current_button: current_button,
+                // charCode: '',
+                // altKey: false,
+                // ctrlKey: false,
+                // shiftKey: false,
+                // metaKey: false,
+                // delegateTarget: target,
+                // pageX: posX,
+                // pageY: posY
+                var action = e.action,
+                altKey = e.altKey,
+                shiftKey = e.shiftKey,
+                ctrlKey = e.ctrlKey,
+                x = e.pageX,
+                y = e.pageY,
+                current_button = e.current_button;
+
+                if(action === 'down') {
+                    if (e.altKey) {
+                        current_button = 2;
+                        e.altKey = false;
+                    } else if (e.shiftKey) {
+                        current_button = 3;
+                        e.shiftKey = false;
+                    }
+                    // Detect interaction mode
+                    switch(current_button) {
+                        case 2: // middle mouse down = pan
+                            mouseMode = modePan;
+                            break;
+                        case 3: // right mouse down = zoom
+                            mouseMode = modeZoom;
+                            break;
+                        default:
+                            mouseMode = modeRotation;
+                            break;
+                    }
+
+                    // Store mouse location
+                    lastLocation = [x, y];
+
+                    e.preventDefault();
+                } else if(action === 'up') {
+                    mouseMode = modeNone;
+                    e.preventDefault();
+                } else if(action === 'move') {
+                    if(mouseMode != modeNone) {
+                        var loc = [x,y];
+
+                        // Can NOT use switch as (modeRotation == modePan) is
+                        // possible when Pan should take over rotation as
+                        // rotation is not possible
+                        if(mouseMode === modePan) {
+                            handlePan(loc);
+                        } else if (mouseMode === modeZoom) {
+                            var deltaY = loc[1] - lastLocation[1];
+                            handleZoom(deltaY * dzScale);
+
+                            // Update mouse location
+                            lastLocation = loc;
+                        } else {
+                           handleRotation(loc);
+                        }
+
+                        // Redraw the image in the canvas
+                        redrawImage();
+                    }
+                }
             });
 
             // Zoom and pan events with mouse buttons and drag
@@ -340,7 +1022,7 @@
                 count = composite.length;
                 while(count--) {
                     var str = composite[count];
-                    if(str.startsWith('@')) {
+                    if(str[0] === '@') {
                         composite[count] = Number(str.substr(1))
                     } else {
                         if(!orderMapping.hasOwnProperty(str)) {
@@ -375,8 +1057,9 @@
                 cache[activeKey] = {};
                 downloadImage(activeKey, basepath + '/' + activeKey.replace('{filename}', 'rgb.jpg'));
                 downloadComposite(activeKey, basepath + '/' + activeKey.replace('{filename}', 'composite.json'));
+                return false;
             } else {
-                draw();
+                return draw();
             }
         }
 
@@ -434,7 +1117,7 @@
 
         function draw() {
             if(!cache.hasOwnProperty(activeKey) || !cache[activeKey].hasOwnProperty('composite') || !cache[activeKey].hasOwnProperty('image')) {
-                return;
+                return false;
             }
             var composite = cache[activeKey]['composite'],
             img = cache[activeKey]['image'],
@@ -449,15 +1132,22 @@
             frontBuffer = null, frontPixels = null, pixelIdx = 0, localIdx;
 
             // Fill with bg color
-            if(bgColor) {
-                frontCTX.fillStyle = bgColor;
-                frontCTX.fillRect(0,0,singleImageSize[0], singleImageSize[1]);
-                frontBuffer = frontCTX.getImageData(0, 0, singleImageSize[0], singleImageSize[1]);
-                frontPixels = frontBuffer.data;
-            } else {
-                frontBuffer = bgCTX.getImageData(0, (nbImages - 1) * singleImageSize[1], singleImageSize[0], singleImageSize[1]);
-                frontPixels = frontBuffer.data;
-            }
+            //if(bgColor) {
+            //    frontCTX.fillStyle = bgColor;
+            //    frontCTX.fillRect(0,0,singleImageSize[0], singleImageSize[1]);
+            //    frontBuffer = frontCTX.getImageData(0, 0, singleImageSize[0], singleImageSize[1]);
+            //    frontPixels = frontBuffer.data;
+            //} else {
+            //    frontBuffer = bgCTX.getImageData(0, (nbImages - 1) * singleImageSize[1], singleImageSize[0], singleImageSize[1]);
+            //    frontPixels = frontBuffer.data;
+            //}
+
+            // Clear front pixels
+            //frontCTX.fillStyle = "#ffffff";
+            //frontCTX.fillRect(0,0,singleImageSize[0], singleImageSize[1]);
+            frontCTX.clearRect(0, 0, singleImageSize[0], singleImageSize[1]);
+            frontBuffer = frontCTX.getImageData(0, 0, singleImageSize[0], singleImageSize[1]);
+            frontPixels = frontBuffer.data;
 
             for(var i = 0; i < count; ++i) {
                 var order = composite[i];
@@ -483,50 +1173,65 @@
             // Draw buffer to canvas
             frontCTX.putImageData(frontBuffer, 0, 0);
             container.trigger('render-bg');
+            return true;
+        }
+
+        function toDataURL() {
+            return frontCanvas[0].toDataURL("image/png");
         }
 
         return {
             updateFields:updateFields,
             draw:draw,
             updatePipeline:updatePipeline,
-            updateColor:updateColor
+            updateColor:updateColor,
+            toDataURL:toDataURL,
+            search:function(){}
         };
     }
 
     // ------------------------------------------------------------------------
 
-    function createSelectColorBy(availableFields, fields) {
-        var buffer = [ "<select class='right-control'>" ],
+    function createSelectColorBy(name, availableFields, fields, addRatio) {
+        var buffer = [ "<div class='right-control'>" ],
         count = availableFields.length,
         value = null;
 
         if(count < 2) {
-            buffer = ["<select class='right-control' style='display: none;'>"];
+            buffer.push("<select style='display: none;'>");
+        } else {
+            buffer.push("<select>");
         }
 
         while(count--) {
             value = availableFields[count];
             buffer.push(SELECT_OPTION.replace(/VALUE/g, value).replace(/NAME/g, fields[value]))
         }
-
         buffer.push("</select>");
+
+        // Add % slider for query
+        if(addRatio) {
+            buffer.push("<span class='vtk-icon-zoom-in action ratio-type shift'/><input class='pixel-ratio' type='range' min='0' max='100' value='0' name='FIELD'/><span class='ratio-value shift'>0%</span>".replace(/FIELD/g, name));
+        }
+
+        buffer.push("</div>");
         return buffer.join('');
     }
 
     // ------------------------------------------------------------------------
 
-    function encodeEntry(entry, layer_fields, fields) {
+    function encodeEntry(entry, layer_fields, fields, addRatio) {
         var controlContent = "";
 
         if(entry['type'] === 'directory') {
             var array = entry['children'],
             count = array.length;
             for(var i = 0; i < count; ++i) {
-                controlContent += encodeEntry(array[i], layer_fields, fields).replace(/FRONT_ICON/g, 'vtk-icon-cancel-circled remove');
+                controlContent += encodeEntry(array[i], layer_fields, fields, addRatio).replace(/FRONT_ICON/g, 'vtk-icon-cancel-circled remove');
             }
             controlContent = DIRECTORY_CONTROL.replace(/CHILDREN/g, controlContent);
         } else {
-           controlContent = createSelectColorBy(layer_fields[entry['ids'][0]], fields);
+           controlContent = createSelectColorBy(entry['ids'][0], layer_fields[entry['ids'][0]], fields, addRatio);
         }
 
         return PIPELINE_ENTRY.replace(/ID/g, entry['ids'].join(':')).replace(/LABEL/g, entry['name']).replace(/CONTROL/g, controlContent);
@@ -534,12 +1239,12 @@
 
     // ------------------------------------------------------------------------
 
-    function createControlPanel(container, pipeline, layer_fields, fields) {
+    function createControlPanel(container, pipeline, layer_fields, fields, addRatio) {
         var pipelineBuffer = [], count = pipeline.length;
 
         // Build pipeline content
         for(var i = 0; i < count; ++i) {
-            pipelineBuffer.push(encodeEntry(pipeline[i], layer_fields, fields).replace(/FRONT_ICON/g, 'vtk-icon-eye toggle-eye'));
+            pipelineBuffer.push(encodeEntry(pipeline[i], layer_fields, fields, addRatio).replace(/FRONT_ICON/g, 'vtk-icon-eye toggle-eye'));
         }
 
         $('<div/>', {
@@ -557,7 +1262,8 @@
         animationWorkIndex = 0,
         play = $('.play', container),
         stop = $('.stop', container),
-        keepAnimation = false;
+        keepAnimation = false,
+        toggleLayer = {};
 
         function animate() {
             $('.active .vcr[data-action="next"]', container).trigger('click');
@@ -565,6 +1271,82 @@
                 setTimeout(animate, 200);
             }
         }
+
+        function updatePipelineUI(query, args, color, sortValue) {
+            var queryObj = {}, count = query.length, queryStr = "", sortStr = sortValue;
+            for(var i = 0; i < count; i += 2) {
+                queryObj[query[i]] = query[i+1];
+            }
+
+            // Update pipeline
+            $('.pipeline > ul > li > ul > li', container).hide();
+            $('.pipeline li', container).each(function(){
+                var me = $(this),
+                id = me.attr('data-id'),
+                visibleLayer = (queryObj[id] != '_'),
+                selectContainer = $('select', me),
+                iconContainer = $('.toggle-eye', me);
+
+                selectContainer.val(queryObj[id]);
+                iconContainer.removeClass('vtk-icon-eye vtk-icon-eye-off').addClass(visibleLayer ? 'vtk-icon-eye':'vtk-icon-eye-off');
+                if(visibleLayer) {
+                    me.addClass('show enabled').show();
+                } else {
+                    me.removeClass('enabled show');
+                }
+            });
+
+            // Update args
+            for(var key in args) {
+                var argContainer = $('.'+key, container),
+                values = argContainer.attr('data-values').split(':'),
+                labelContainer = $('.value', argContainer),
+                count = values.length,
+                targetValue = args[key];
+
+                while(count--) {
+                    if(values[count] == targetValue) {
+                        labelContainer.html(targetValue);
+                        argContainer.attr('data-index', count);
+                        count = 0;
+                    }
+                }
+
+                // Update Query STR
+                queryStr += " && " + key + " == " + targetValue;
+            }
+            queryStr = queryStr.substr(4);
+
+            // Update color
+            $('.color').removeClass('active');
+            if(color) {
+                $('.color[data-color="' + color + '"]', container).addClass('active');
+            }
+
+            // Render the new content
+            updatePipeline();
+            updateComposite();
+            manager.updateColor(color);
+
+            // Update query if search mode
+            queryExp = $('.query-expression', container);
+            sortExp = $('.sortby-expression', container);
+            if(queryExp) {
+                queryExp.val(queryStr);
+                if(sortStr) {
+                    sortExp.val(sortStr);
+                }
+                setTimeout(function(){
+                    $('.compute-coverage', container).trigger('click');
+                    setTimeout(function(){
+                        queryExp.trigger('change');
+                    }, 600);
+                }, 100);
+            }
+        }
+        container.bind('updateControl', function(event){
+            updatePipelineUI(event.query, event.args, event.color, event.sort);
+        });
 
         function updatePipeline() {
             var query = "";
@@ -575,11 +1357,13 @@
                 var layerContainer = $('li[data-id="'+layer+'"]', container);
                 if(layerContainer.hasClass('show') && layerContainer.hasClass('enabled')) {
                     query += $('select:eq(0)', layerContainer).val();
+                    toggleLayer[layer] = true;
                 } else {
                     query += '_';
+                    toggleLayer[layer] = false;
                 }
             }
-
+            container.data('pipeline-query', query);
             manager.updatePipeline(query);
         }
 
@@ -592,6 +1376,7 @@
             phi = extractFieldValue($('.phi', container)),
             theta = extractFieldValue($('.theta', container));
             manager.updateFields(time, phi, theta);
+            container.data('args', {time:time, phi:phi, theta:theta});
         }
 
         $('.color', container).click(function(){
@@ -616,7 +1401,9 @@
         });
 
         $('.reset', container).click(function(){
-            zoomableRender.resetCamera();
+            if(zoomableRender) {
+                zoomableRender.resetCamera();
+            }
         });
 
         $('.toggle-eye', container).click(function(){
@@ -635,6 +1422,17 @@
             }
 
             updatePipeline();
+
+            // Update query if search mode
+            var queryExp = $('.query-expression', container);
+            if(queryExp) {
+                setTimeout(function(){
+                    $('.compute-coverage', container).trigger('click');
+                    setTimeout(function(){
+                        queryExp.trigger('change');
+                    }, 600);
+                }, 100);
+            }
         });
 
         $('.remove', container).click(function(){
@@ -686,8 +1484,7 @@
 
         $('.select-layer', container).click(function(){
             var me = $(this),
-            pipelineContainer = $('.pipeline', container),
-            fieldContainer = $('.fields', container),
+            pipelineContainer = $('.pipeline-container', container),
             layerSelector = $('.layer-selector', container),
             title = me.parent().children('span.label:eq(0)').html(),
             buffer = [];
@@ -702,10 +1499,20 @@
             // add listeners
             $('.validate-layer', layerSelector).click(function(){
                 pipelineContainer.show();
-                fieldContainer.show();
                 layerSelector.hide();
 
                 updatePipeline();
+
+                // Update query if search mode
+                var queryExp = $('.query-expression', container);
+                if(queryExp) {
+                    setTimeout(function(){
+                        $('.compute-coverage', container).trigger('click');
+                        setTimeout(function(){
+                            queryExp.trigger('change');
+                        }, 600);
+                    }, 100);
+                }
             });
             $('input', layerSelector).change(function(){
                 var me = $(this),
@@ -714,13 +1521,12 @@
                 item = $('li[data-id="' + id + '"]', container);
 
                 if(checked) {
-                    item.addClass("enabled").show();
+                    item.addClass("enabled show").show();
                 } else {
-                    item.removeClass("enabled").hide();
+                    item.removeClass("enabled show").hide();
                 }
             });
 
-            fieldContainer.hide();
             pipelineContainer.hide();
             layerSelector.show();
         });
@@ -740,18 +1546,84 @@
 
         // Forward render call to front buffer
         container.bind('render-bg', function(){
-            zoomableRender.paint();
+            if(zoomableRender) {
+                zoomableRender.paint();
+            }
         });
 
         // Process current config
         updatePipeline();
         updateComposite();
+
+        // ===== Search based UI =====
+
+        $('.compute-coverage', container).click(function(){
+            var pipelineContainer = $('.control', container), maxWidth = $(window).width();
+            $('.chart-container', container).css('height', pipelineContainer.height()).css('width', maxWidth - pipelineContainer.width() - 50);
+            updatePipeline();
+            manager.search();
+        });
+
+        $('.query-expression', container).bind('change keyup', function(e){
+            // Apply search
+            if(e.type === 'keyup' && e.keyCode !== 13) {
+                return;
+            }
+            var me = $(this), userQuery = me.val();
+            manager.applyQuery(userQuery);
+        });
+        $('.sortby-expression', container).bind('change keyup', function(e){
+            // Apply search
+            if(e.type === 'keyup' && e.keyCode !== 13) {
+                return;
+            }
+            var me = $('.query-expression', container), userQuery = me.val();
+            manager.applyQuery(userQuery);
+        });
+
+        $('.toggle-stats', container).click(function(){
+            var me = $(this), shouldShow = me.toggleClass('stats').hasClass('stats');
+            if(shouldShow) {
+                $('.composite-search-results .composite-result > ul', container).show();
+            } else {
+                $('.composite-search-results .composite-result > ul', container).hide();
+            }
+        });
+
+        $('.page-result-action', container).bind('click change',function(){
+            var me = $(this),
+            action = me.attr('data-action'),
+            pages = $('.composite-search-results .result-page', container),
+            activePage = $('.composite-search-results .result-page.active', container),
+            activeIdx = Number(activePage.attr("data-page")),
+            nbPages = pages.length;
+
+            pages.removeClass('active');
+
+            if(action === "first") {
+                $('.result-page[data-page=0]', container).addClass('active');
+            } else if(action === "previous") {
+                $('.result-page[data-page='+((nbPages + activeIdx - 1)%nbPages)+']', container).addClass('active');
+            } else if(action === "next") {
+                $('.result-page[data-page='+((activeIdx + 1)%nbPages)+']', container).addClass('active');
+            } else if(action === "last") {
+                $('.result-page[data-page='+(nbPages - 1)+']', container).addClass('active');
+            } else if(action === "go-to") {
+                var newIdx = Number($('.result-page-index', container).val()) - 1;
+                $('.result-page[data-page='+newIdx+']', container).addClass('active');
+            }
+            manager.renderActivePage();
+        });
+
+        // $('.render-all-composites', container).click(function(){
+        //     $('.composite-result', container).trigger('click');
+        // });
     }
 
     /**
      * jQuery catalyst view constructor.
      *
-     * @member jQuery.vtkCatalystViewer
+     * @member jQuery.vtkCatalystCompositeViewer
      * @param basePath
      * Root directory for data to visualize
      */
@@ -784,13 +1656,11 @@
                     me.data('layers', data.metadata.layers);
 
                     // Add control UI
-                    createControlPanel(me, pipeline, layer_fields, fields);
+                    createControlPanel(me, pipeline, layer_fields, fields, false);
 
                     // Add rendering view
                     var manager = createCompositeManager(me, dataBasePath, data, nbImages);
                     me.data('compositeManager', manager);
-
-
 
                     var zoomableRender = createZoomableCanvasObject(me, $('.single-size-back-buffer', me), $('.front-renderer', me), 10, deltaPhi, deltaTheta);
                     me.data('zoomableRender', zoomableRender);
@@ -806,6 +1676,24 @@
 
                     // Attach interaction listeners
                     initializeListeners(me, manager, zoomableRender);
+
+                    $('.front-renderer', me).dblclick(function(){
+                        var colorContainer = $('.color.active', me);
+                        if(colorContainer) {
+                            me.trigger({
+                                type: "open-view",
+                                query: me.data('pipeline-query'),
+                                args: me.data('args'),
+                                color: colorContainer.attr('data-color')
+                            });
+                        } else {
+                            me.trigger({
+                                type: "open-view",
+                                query: me.data('pipeline-query'),
+                                args: me.data('args')
+                            });
+                        }
+                    });
                 },
                 error: function(error) {
                     console.log("error when trying to download " + dataBasePath + '/info.json');
@@ -815,4 +1703,79 @@
         });
     }
 
+    /**
+     * jQuery catalyst composite search constructor.
+     *
+     * @member jQuery.vtkCatalystCompositeSearch
+     * @param basePath
+     * Root directory for data to visualize
+     */
+
+    $.fn.vtkCatalystCompositeSearch = function(dataBasePath) {
+        return this.each(function() {
+            var me = $(this).unbind().empty().addClass('vtkweb-catalyst-analysis-composite-search vtkweb-catalyst-composite');
+
+            // Get meta-data
+            $.ajax({
+                url: dataBasePath + '/info.json',
+                dataType: 'json',
+                success: function( data ) {
+                    // Extract info to local vars
+                    var layer_fields = data.metadata.layer_fields,
+                    fields = data.metadata.fields,
+                    pipeline = data.metadata.pipeline,
+                    args = data.arguments,
+                    searchManager = createSearchManager(me, data, dataBasePath);
+
+                    // Keep data info
+                    me.data('basepath', dataBasePath);
+                    me.data('layers', data.metadata.layers);
+
+                    // Add control UI
+                    createControlPanel(me, pipeline, layer_fields, fields, false);
+
+                    // Enable additional fields if any (time, phi, theta)
+                    var helpTxt = "", excludeList = {"filename": true, "field": true},
+                    layerVarNames = "<hr/>";
+                    for(var key in args) {
+                        if(key === 'layer') {
+                            continue;
+                        }
+                        var fieldContainer = $('.' + key, me);
+                        if(fieldContainer) {
+                            // Add documentation
+                            var help = "<b>NAME</b>: VALUES <br/>".replace(/NAME/g, key),
+                            values = args[key]["values"];
+                            if(args[key]['type'] === 'range') {
+                                values = "[MIN to MAX % MODULO]".replace(/MIN/g, values[0]).replace(/MAX/g, values[values.length - 1]).replace(/MODULO/g, (Number(values[1]) - Number(values[0])));
+                            }
+                            help = help.replace(/VALUES/g, values);
+                            if(!excludeList.hasOwnProperty(key)) {
+                                helpTxt += help;
+                            }
+
+                            fieldContainer.attr('data-values', args[key].values.join(':')).attr('data-index', '0').attr('data-size', args[key].values.length);
+                        }
+                    }
+
+                    // Create layer labels
+                    for(var key in searchManager.layerToLabel) {
+                        layerVarNames += "<b>NAME</b>: VALUES <br/>".replace(/NAME/g, key).replace(/VALUES/g, searchManager.layerToLabel[key]);
+                    }
+                    helpTxt += layerVarNames;
+
+                    // Add search/results containers
+                    $('<div/>', {class: "chart-container"}).appendTo(me);
+                    $('<div/>', {class: "search-toolbar", html: '<div class="table"><span class="cell"><b>Query</b></span><span class="cell expand"><input type="text" class="query-expression"></span><span class="cell"><b>Sort&nbsp;by</b></span><span class="cell expand"><input type="text" class="sortby-expression"></span><span class="cell"><span class="result-count"></span></span><span class="cell"><span class="vtk-icon-info-1 toggle-stats action" title="Toggle statistics"></span></span><span class="cell"><ul><li class="vtk-icon-to-start-1 action page-result-action" data-action="first"></li><li class="vtk-icon-left-dir-1 action page-result-action" data-action="previous"></li><li><input type="text" value="1" class="result-page-index page-result-action" data-action="go-to"></li><li> / </li><li class="result-page-number"></li><li class="vtk-icon-right-dir-1 action page-result-action" data-action="next"></li><li class="vtk-icon-to-end-1 action page-result-action" data-action="last"></li></ul></span></div></div><i>HELP</i>'.replace(/HELP/g, helpTxt)}).appendTo(me);
+                    $('<div/>', {class: "composite-search-results"}).appendTo(me);
+
+                    initializeListeners(me, searchManager, null);
+                },
+                error: function(error) {
+                    console.log("error when trying to download " + dataBasePath + '/info.json');
+                    console.log(error);
+                }
+            });
+        });
+    }
 }(jQuery, window));

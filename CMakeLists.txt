@@ -1,15 +1,29 @@
 cmake_minimum_required(VERSION 2.8.8 FATAL_ERROR)
 
+option(VTK_ENABLE_KITS "Build VTK using kits instead of modules." OFF)
+mark_as_advanced(VTK_ENABLE_KITS)
+if(VTK_ENABLE_KITS)
+  # Kits use INTERFACE libraries which were introduced in 3.0.
+  cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
+endif()
+
 foreach(p
     CMP0020 # CMake 2.8.11
     CMP0022 # CMake 2.8.12
     CMP0025 # CMake 3.0
-    CMP0042 # CMake 3.0
+    CMP0053 # CMake 3.1
     )
   if(POLICY ${p})
     cmake_policy(SET ${p} NEW)
   endif()
 endforeach()
+
+# Set a consistent MACOSX_RPATH default across all CMake versions.
+# When CMake 2.8.12 is required, change this default to 1.
+# When CMake 3.0.0 is required, remove this block (see CMP0042).
+if(NOT DEFINED CMAKE_MACOSX_RPATH)
+  set(CMAKE_MACOSX_RPATH 0)
+endif()
 
 project(VTK)
 
@@ -40,7 +54,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # Test input data staging directory.
-set(VTK_TEST_DATA_DIR "${ExternalData_BINARY_ROOT}/Testing")
+file(RELATIVE_PATH vtk_reldir "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+set(VTK_TEST_DATA_DIR "${ExternalData_BINARY_ROOT}/${vtk_reldir}/Testing")
 
 # Test input data directory.
 set(VTK_TEST_INPUT_DIR "${VTK_SOURCE_DIR}/Testing/Data")
@@ -419,3 +434,11 @@ unset(_vtk_all_targets)
 # Create target to download data from the VTKData group.  This must come after
 # all tests have been added that reference the group, so we put it last.
 ExternalData_Add_Target(VTKData)
+if(VTK_DATA_EXCLUDE_FROM_ALL)
+  set_property(TARGET VTKData PROPERTY EXCLUDE_FROM_ALL 1)
+  if(BUILD_TESTING AND NOT VTK_DATA_EXCLUDE_FROM_ALL_NO_WARNING)
+    message(WARNING "VTK_DATA_EXCLUDE_FROM_ALL is ON so test data "
+      "(needed because BUILD_TESTING is ON) may not be available "
+      "without manually building the 'VTKData' target.")
+  endif()
+endif()

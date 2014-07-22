@@ -10,8 +10,17 @@ vtk_module(vtkRenderingCore
     vtkFiltersExtraction
     vtksys
   TEST_DEPENDS
+    vtkIOLegacy
     vtkIOXML
     vtkTestingCore
     vtkTestingRendering
-    vtkRenderingOpenGL
+    vtkRendering${VTK_RENDERING_BACKEND}
+    vtkRenderingFreeType
+    vtkRenderingAnnotation
+    vtkInteractionStyle
+    vtkImagingSources
+    vtkFiltersSources
+    vtkFiltersProgrammable
+  KIT
+    vtkRendering
   )

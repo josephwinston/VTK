@@ -13,6 +13,7 @@ from random import choice
 
 from twisted.internet import reactor, defer
 from twisted.internet.task import deferLater
+from twisted.internet.defer import CancelledError
 from twisted.python import log
 from twisted.web import server, resource, http
 from twisted.web.resource import Resource
@@ -42,7 +43,7 @@ Here is a sample of what a configuration file could looks like:
         "content": "/.../www",                    # Optional: Directory shared over HTTP
         "proxy_file" : "/.../proxy-mapping.txt",  # Proxy-Mapping file for Apache
         "sessionURL" : "ws://${host}:${port}/ws", # ws url used by the client to connect to the started process
-        "timeout" : 5,                            # Wait time in second after process start
+        "timeout" : 25,                           # Wait time in second after process start
         "log_dir" : "/.../viz-logs",              # Directory for log files
         "upload_dir" : "/.../data",               # If launcher should act as upload server, where to put files
         "fields" : ["file", "host", "port", "updir"]       # List of fields that should be send back to client
@@ -52,7 +53,7 @@ Here is a sample of what a configuration file could looks like:
       ## Useful session vars for client
       ## ===============================
 
-      "sessionData" : { updir": "/Home" }         # Tells client which path to updateFileBrowser after uploads
+      "sessionData" : { "updir": "/Home" },      # Tells client which path to updateFileBrowser after uploads
 
       ## ===============================
       ## Resources list for applications
@@ -282,11 +283,14 @@ class ProcessManager(object):
         for id in self.processes:
             self.processes[id].terminate()
 
-    def startProcess(self, session, ready_callback=None):
+    def _getLogFilePath(self, id):
+        return "%s%s%s.txt" % (self.log_dir, os.sep, id)
+
+    def startProcess(self, session):
         proc = None
 
         # Create output log file
-        logFilePath = self.log_dir + os.sep + str(session['id']) + ".txt"
+        logFilePath = self._getLogFilePath(session['id'])
         with open(logFilePath, "a+") as log_file:
             try:
                 proc = subprocess.Popen(session['cmd'], stdout=log_file, stderr=log_file)
@@ -316,6 +320,42 @@ class ProcessManager(object):
     def isRunning(self, id):
         return self.processes[id].poll() is None
 
+    # ========================================================================
+    # Look for ready line in process output. Return True if found, False
+    # otherwise. If no ready_line is configured and process is running return
+    # False. This will then rely on the timout time.
+    # ========================================================================
+
+    def isReady(self, session, count = 0):
+      id = session['id']
+
+      # The process has to be running to be ready!
+      if not self.isRunning(id) and count < 60:
+        return False
+
+      # Give up after 60 seconds if still not running
+      if not self.isRunning(id):
+        return True
+
+      application = self.config['apps'][session['application']]
+      ready_line  = application.get('ready_line', None)
+
+      # If no ready_line is configured and the process is running then thats
+      # enough.
+      if not ready_line:
+          return False
+
+      ready = False
+
+      # Check the output for ready_line
+      logFilePath = self._getLogFilePath(session['id'])
+      with open(logFilePath, "r") as log_file:
+          for line in log_file.readlines():
+              if ready_line in line:
+                  ready = True
+                  break
+
+      return ready
 
 # ===========================================================================
 # Class to implement requests to POST, GET and DELETE methods
@@ -346,6 +386,7 @@ class LauncherResource(resource.Resource, object):
 
         # Make sure the request has all the expected keys
         if not validateKeySet(payload, ["application"], "Launch request"):
+            request.setResponseCode(http.BAD_REQUEST)
             return json.dumps({"error": "The request is not complete"})
 
         # Try to free any available resource
@@ -359,31 +400,84 @@ class LauncherResource(resource.Resource, object):
 
         # No resource available
         if not session:
+            request.setResponseCode(http.SERVICE_UNAVAILABLE)
             return json.dumps({"error": "All the resources are currently taken"})
 
-        # Create response callback
-        d = deferLater(reactor, self.time_to_wait, lambda: request)
-        d.addCallback(self._delayedRender, session_id=session['id'])
-
         # Start process
-        proc = self.process_manager.startProcess(session, d)
+        proc = self.process_manager.startProcess(session)
 
         if not proc:
-            request.setResponseCode(http.OK)
+            request.setResponseCode(http.SERVICE_UNAVAILABLE)
             return json.dumps({"error": "The process did not properly start. %s" % str(session['cmd'])})
+
+        # local function to act as errback for Deferred objects.
+        def errback(error):
+            # Filter out CancelledError and propagate rest
+            if error.type != CancelledError:
+                return error
+
+        # Deferred object set to timeout request if process doesn't start in time
+        timeout_deferred = deferLater(reactor, self.time_to_wait, lambda: request)
+        timeout_deferred.addCallback(self._delayedRenderTimeout, session)
+        timeout_deferred.addErrback(errback)
+        # Make sure other deferred is canceled once one has been fired
+        request.notifyFinish().addCallback(lambda x: timeout_deferred.cancel())
+
+        # If a ready_line is configured create a Deferred object to wait for
+        # ready line to be produced
+        if 'ready_line' in self._config['apps'][session['application']]:
+            ready_deferred = self._waitForReady(session, request)
+            ready_deferred.addCallback(self._delayedRenderReady, session)
+            ready_deferred.addErrback(errback)
+            # Make sure other deferred is canceled once one has been fired
+            request.notifyFinish().addCallback(lambda x: ready_deferred.cancel())
 
         return NOT_DONE_YET
 
-    def _delayedRender(self, request, session_id=None):
-        session = self.session_manager.getSession(session_id)
-        running = self.process_manager.isRunning(session_id)
 
-        if session and running:
-            request.write(json.dumps(filterResponse(session, self.field_filter)))
+    # ========================================================================
+    # Wait for session to be ready. Rather than blocking keep using callLater(...)
+    # to schedule self in reactor. Return a Deferred object whose callback will
+    # be triggered when the session is ready
+    # ========================================================================
+
+    def _waitForReady(self, session, request, count=0, d=None):
+        if not d:
+            d = defer.Deferred()
+
+        if not self.process_manager.isReady(session, count + 1):
+            reactor.callLater(1, self._waitForReady, session, request, count + 1, d)
         else:
-            request.write(json.dumps({"error":"Session did not properly started"}))
+            d.callback(request)
 
+        return d
+
+    # ========================================================================
+    # Called when the timeout out expires. Check if process is now ready
+    # and send response to client.
+    # ========================================================================
+
+    def _delayedRenderTimeout(self, request, session):
+        ready = self.process_manager.isReady(session, 0)
+
+        if ready:
+            request.write(json.dumps(filterResponse(session, self.field_filter)))
+            request.setResponseCode(http.OK)
+        else:
+            request.write(json.dumps({"error": "Session did not start before timeout expired. Check session logs."}))
+            request.setResponseCode(http.SERVICE_UNAVAILABLE)
+
+        request.finish()
+
+    # ========================================================================
+    # Called when the process is ready ( the ready line has been read from the
+    # process output).
+    # ========================================================================
+
+    def _delayedRenderReady(self, request, session):
+        request.write(json.dumps(filterResponse(session, self.field_filter)))
         request.setResponseCode(http.OK)
+
         request.finish()
 
     # =========================================================================
@@ -396,6 +490,7 @@ class LauncherResource(resource.Resource, object):
         if not id:
            message = "id not provided in GET request"
            logging.error(message)
+           request.setResponseCode(http.BAD_REQUEST)
            return json.dumps({"error":message})
 
         logging.info("GET request received for id: %s" % id)
@@ -404,6 +499,7 @@ class LauncherResource(resource.Resource, object):
         if not session:
            message = "No session with id: %s" % id
            logging.error(message)
+           request.setResponseCode(http.NOT_FOUND)
            return json.dumps({"error":message})
 
         # Return session meta-data
@@ -420,6 +516,7 @@ class LauncherResource(resource.Resource, object):
         if not id:
            message = "id not provided in DELETE request"
            logging.error(message)
+           request.setResponseCode(http.BAD_REQUEST)
            return json.dumps({"error":message})
 
         logging.info("DELETE request received for id: %s" % id)
@@ -428,6 +525,7 @@ class LauncherResource(resource.Resource, object):
         if not session:
            message = "No session with id: %s" % id
            logging.error(message)
+           request.setResponseCode(http.NOT_FOUND)
            return json.dumps({"error":message})
 
         # Remove session

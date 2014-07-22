@@ -1,0 +1,14 @@
+vtk_module(vtkRenderingContextOpenGL2
+  TCL_NAME
+    vtkRenderingContextOpenGLII
+  DEPENDS
+    vtkRenderingOpenGL2
+  IMPLEMENTS
+    vtkRenderingContext2D
+  BACKEND
+    OpenGL2
+  PRIVATE_DEPENDS
+    vtkRenderingFreeType
+  KIT
+    vtkOpenGL
+  )

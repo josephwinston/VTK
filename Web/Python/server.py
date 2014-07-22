@@ -1,5 +1,5 @@
 r"""server is a module that enables using VTK through a web-server. This
-module implments a WampServerProtocol that provides the core RPC-API needed to
+module implments a Wamp v2 Server Protocol that provides the core RPC-API needed to
 place interactive visualization in web-pages. Developers can extent
 ServerProtocol to provide additional RPC callbacks for their web-applications.
 
@@ -10,22 +10,19 @@ Use "--help" to list the supported arguments.
 
 """
 
-import types
-import logging
-from threading import Timer
-
-from twisted.python import log
-from twisted.internet import reactor
-from autobahn.websocket import listenWS
-from autobahn.wamp import exportRpc, \
-                          WampServerProtocol
-from autobahn.resource import WebSocketResource
-from autobahn.wamp import WampServerFactory
-
-from . import wamp
+import sys, logging
 
 from . import testing
 from . import upload
+from . import wamp as vtk_wamp
+
+from autobahn.twisted.resource  import WebSocketResource
+from autobahn.twisted.websocket import listenWS
+
+from twisted.internet           import reactor
+from twisted.internet.defer     import inlineCallbacks
+from twisted.internet.endpoints import serverFromString
+from twisted.python             import log
 
 # =============================================================================
 # Setup default arguments to be parsed
@@ -60,6 +57,12 @@ def add_arguments(parser):
     parser.add_argument("-a", "--authKey", default='vtkweb-secret',
         help="Authentication key for clients to connect to the WebSocket.")
     parser.add_argument("-f", "--force-flush", default=False, help="If provided, this option will force additional padding content to the output.  Useful when application is triggered by a session manager.", dest="forceFlush", action='store_true')
+    parser.add_argument("-k", "--sslKey", type=str, default="",
+        help="SSL key.  Use this and --sslCert to start the server on https.")
+    parser.add_argument("-j", "--sslCert", type=str, default="",
+        help="SSL certificate.  Use this and --sslKey to start the server on https.")
+    parser.add_argument("-ws", "--ws-endpoint", type=str, default="ws", dest='ws',
+        help="Specify WebSocket endpoint. (Default: ws)")
 
     # Hook to extract any testing arguments we need
     testing.add_arguments(parser)
@@ -74,7 +77,7 @@ def add_arguments(parser):
 # =============================================================================
 
 def start(argv=None,
-        protocol=wamp.ServerProtocol,
+        protocol=vtk_wamp.ServerProtocol,
         description="VTK/Web web-server based on Twisted."):
     """
     Sets up the web-server using with __name__ == '__main__'. This can also be
@@ -105,7 +108,7 @@ def stop_webserver() :
 # Start webserver
 # =============================================================================
 
-def start_webserver(options, protocol=wamp.ServerProtocol, disableLogging=False):
+def start_webserver(options, protocol=vtk_wamp.ServerProtocol, disableLogging=False):
     """
     Starts the web-server with the given protocol. Options must be an object
     with the following members:
@@ -117,26 +120,61 @@ def start_webserver(options, protocol=wamp.ServerProtocol, disableLogging=False)
     from twisted.internet import reactor
     from twisted.web.server import Site
     from twisted.web.static import File
+    from twisted.web.resource import Resource
     import sys
 
     if not disableLogging:
         log.startLogging(sys.stdout)
 
-    # setup the server-factory
-    wampFactory = wamp.ReapingWampServerFactory(
-        "ws://%s:%d" % (options.host, options.port), options.debug, options.timeout)
-    wampFactory.protocol = protocol
+    contextFactory = None
+
+    use_SSL = False
+    if options.sslKey and options.sslCert:
+      use_SSL = True
+      wsProtocol = "wss"
+      from twisted.internet import ssl
+      contextFactory = ssl.DefaultOpenSSLContextFactory(options.sslKey, options.sslCert)
+    else:
+      wsProtocol = "ws"
+
+    # Create WAMP router factory
+    from autobahn.wamp.router import RouterFactory
+    router_factory = RouterFactory()
+
+    # create a WAMP router session factory
+    from autobahn.twisted.wamp import RouterSessionFactory
+    session_factory = RouterSessionFactory(router_factory)
+
+    # Register protocol
+    session_factory.add(protocol())
+
+    # create a WAMP-over-WebSocket transport server factory
+    transport_factory = vtk_wamp.TimeoutWampWebSocketServerFactory(session_factory, \
+           url        = "%s://%s:%d" % (wsProtocol, options.host, options.port),    \
+           debug      = options.debug,                                              \
+           debug_wamp = options.debug,                                              \
+           timeout    = options.timeout )
 
     # Do we serve static content or just websocket ?
     if len(options.content) == 0:
         # Only WebSocket
-        listenWS(wampFactory)
+        listenWS(transport_factory, contextFactory, options.timeout)
     else:
         # Static HTTP + WebSocket
-        wsResource = WebSocketResource(wampFactory)
+        wsResource = WebSocketResource(transport_factory)
 
         root = File(options.content)
-        root.putChild("ws", wsResource)
+
+        # Handle complex ws endpoint
+        ws_fullpath = options.ws.split('/')
+        parent_path_item_resource = root
+        for path_item in ws_fullpath:
+            if path_item == ws_fullpath[-1]:
+                parent_path_item_resource.putChild(path_item, wsResource)
+            else:
+                new_resource = Resource()
+                parent_path_item_resource.putChild(path_item, new_resource)
+                parent_path_item_resource = new_resource
 
         if options.uploadPath != None :
             from upload import UploadPage
@@ -145,7 +183,10 @@ def start_webserver(options, protocol=wamp.ServerProtocol, disableLogging=False)
 
         site = Site(root)
 
-        reactor.listenTCP(options.port, site)
+        if use_SSL:
+          reactor.listenSSL(options.port, site, contextFactory)
+        else:
+          reactor.listenTCP(options.port, site)
 
     # Work around to force the output buffer to be flushed
     # This allow the process launcher to parse the output and
@@ -158,9 +199,6 @@ def start_webserver(options, protocol=wamp.ServerProtocol, disableLogging=False)
     # Give test client a chance to initialize a thread for itself
     # testing.initialize(opts=options)
 
-    # Start the factory
-    wampFactory.startFactory()
-
     # Initialize testing: checks if we're doing a test and sets it up
     testing.initialize(options, reactor)
 
@@ -169,9 +207,6 @@ def start_webserver(options, protocol=wamp.ServerProtocol, disableLogging=False)
         reactor.run(installSignalHandlers=0)
     else:
         reactor.run()
-
-    # Stope the factory
-    wampFactory.stopFactory()
 
     # Give the testing module a chance to finalize, if necessary
     testing.finalize()

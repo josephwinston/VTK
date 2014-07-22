@@ -9,8 +9,12 @@
 }
 
 .vtkweb-catalyst-analysis-search .search-toolbar input[type='text'] {
-    width: 500px;
+    width: 30%;
     margin: 0 10px 0 10px;
+}
+
+.vtkweb-catalyst-analysis-search .search-toolbar input.sort-expression {
+    width: 7%;
 }
 
 .vtkweb-catalyst-analysis-search .search-toolbar i {
@@ -28,10 +32,39 @@
     display: block;
 }
 
-.vtkweb-catalyst-analysis-search  .query-results {
+.vtkweb-catalyst-analysis-search .query-result {
+    margin: 10px;
+    border-radius: 5px;
+    border: solid 1px black;
     position: relative;
+    float: left;
+    overflow: hidden;
 }
 
-.vtkweb-catalyst-analysis-search  .query-result {
-    margin: 10px;
+.vtkweb-catalyst-analysis-search .query-stats {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background: rgba(255, 255, 255, 0.7);
+    padding: 10px;
+    border-radius: 5px;
+    z-index: 2;
+}
+
+.vtkweb-catalyst-analysis-search .query-result .image-result {
+    position: relative;
+    width: 100%;
+    z-index: 1;
+}
+
+.vtkweb-catalyst-analysis-search .search-button {
+    padding: 2px;
+    border-radius: 4px;
+    border: solid 1px black;
+    background: white;
+    margin-left: 15px;
+}
+
+.vtkweb-catalyst-analysis-search .toggle-stats.stats {
+    background: #ccc;
 }

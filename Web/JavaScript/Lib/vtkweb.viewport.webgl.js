@@ -441,8 +441,9 @@
             gl.useProgram(renderingContext.shaderProgram);
             gl.uniform1i(renderingContext.shaderProgram.uIsLine, false);
 
-            var projMatrix = mat4.clone(camera.getCameraMatrices()[0]);
-            var mvMatrix = mat4.clone(camera.getCameraMatrices()[1]);
+            var projMatrix = mat4.create();
+            var mvMatrix = mat4.create();
+            var normalMatrix = mat4.create();
 
             // @note Not sure if this is required
             mat4.translate(mvMatrix, mvMatrix, [0.0, 0.0, -1.0]);
@@ -454,11 +455,6 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, background.cbuff);
             gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, background.cbuff.itemSize, gl.FLOAT, false, 0, 0);
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, background.ibuff);
-
-            var mvMatrixInv = mat4.create(),
-            normalMatrix = mat4.create();
-            mat4.invert(mvMatrixInv, mvMatrix);
-            mat4.transpose(normalMatrix, mvMatrixInv);
 
             renderingContext.gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, projMatrix);
             renderingContext.gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
@@ -1006,7 +1002,7 @@
                 stat_id: 'webgl-fetch-scene',
                 stat_value: 0
             });
-            session.call("vtk:getSceneMetaData", Number(options.view)).then(function(data) {
+            session.call("viewport.webgl.metadata", [Number(options.view)]).then(function(data) {
                 sceneJSON = JSON.parse(data);
                 container.trigger({
                     type: 'stats',
@@ -1029,7 +1025,7 @@
                     stat_id: 'webgl-fetch-object',
                     stat_value: 0
                 });
-                session.call("vtk:getWebGLData", viewId, sceneObject.id, part).then(function(data) {
+                session.call("viewport.webgl.data", [viewId, sceneObject.id, part]).then(function(data) {
                     try {
                         // decode base64
                         data = atob(data);
@@ -1173,7 +1169,7 @@
                 fp = [fp_[0], fp_[1], fp_[2]],
                 up = [up_[0], up_[1], up_[2]],
                 pos = [pos_[0], pos_[1], pos_[2]];
-                session.call("vtk:updateCamera", Number(options.view), fp, up, pos);
+                session.call("viewport.camera.update", [Number(options.view), fp, up, pos]);
             }
         }
 

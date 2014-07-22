@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 2.8.5 FATAL_ERROR)
 if(POLICY CMP0025)
   cmake_policy(SET CMP0025 NEW) # CMake 3.0
 endif()
+if(POLICY CMP0053)
+  cmake_policy(SET CMP0053 NEW) # CMake 3.1
+endif()
 
 PROJECT (Modelling)
 
@@ -39,13 +42,20 @@ if(BUILD_TESTING)
       .5 "DATA{${VTK_TEST_INPUT_DIR}/cow.vtp}"
       ${VTK_TEST_OUTPUT_DIR}/Delaunay3DAlpha.vtu
       )
-    vtk_add_test_cxx(
+    vtk_add_test_cxx(${vtk-example}CxxTests data_tests
       TestFinance.cxx
       )
-    vtk_add_test_cxx(NO_DATA NO_VALID NO_OUTPUT
+    vtk_add_test_cxx(${vtk-example}CxxTests tests
+      NO_DATA NO_VALID NO_OUTPUT
       TestDelaunay3D.cxx
       TestDelaunay3DAlpha.cxx
       )
-    vtk_test_cxx_executable(${vtk-example}CxxTests RENDERING_FACTORY)
+    set(all_tests
+      ${data_tests}
+      ${tests}
+      )
+    vtk_test_cxx_executable(${vtk-example}CxxTests all_tests
+      RENDERING_FACTORY
+      )
   endif()
 endif()

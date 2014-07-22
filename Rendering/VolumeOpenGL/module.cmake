@@ -1,8 +1,8 @@
 vtk_module(vtkRenderingVolumeOpenGL
-  GROUPS
-    Rendering
   IMPLEMENTS
     vtkRenderingVolume
+  BACKEND
+    OpenGL
   DEPENDS
     vtkRenderingOpenGL
   PRIVATE_DEPENDS
@@ -16,4 +16,6 @@ vtk_module(vtkRenderingVolumeOpenGL
     vtkImagingSources
     vtkImagingGeneral
     vtkInteractionStyle
+  KIT
+    vtkOpenGL
   )

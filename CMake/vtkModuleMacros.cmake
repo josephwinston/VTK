@@ -26,6 +26,8 @@ endif()
 #  DESCRIPTION = Free text description of the module
 #  TCL_NAME = Alternative name for the TCL wrapping (cannot contain numbers)
 #  IMPLEMENTS = Modules that this module implements, using the auto init feature
+#  BACKEND = An implementation backend that this module belongs (valid with
+#            IMPLEMENTS only)
 #  GROUPS = Module groups this module should be included in
 #  TEST_LABELS = Add labels to the tests for the module
 #
@@ -48,14 +50,16 @@ macro(vtk_module _name)
   set(${vtk-module}_PRIVATE_DEPENDS "")
   set(${vtk-module-test}_DEPENDS "${vtk-module}")
   set(${vtk-module}_IMPLEMENTS "")
+  set(${vtk-module}_BACKEND "")
   set(${vtk-module}_DESCRIPTION "description")
   set(${vtk-module}_TCL_NAME "${vtk-module}")
   set(${vtk-module}_EXCLUDE_FROM_ALL 0)
   set(${vtk-module}_EXCLUDE_FROM_WRAPPING 0)
   set(${vtk-module}_EXCLUDE_FROM_WRAP_HIERARCHY 0)
   set(${vtk-module}_TEST_LABELS "")
+  set(${vtk-module}_KIT "")
   foreach(arg ${ARGN})
-    if("${arg}" MATCHES "^((|COMPILE_|PRIVATE_|TEST_|)DEPENDS|DESCRIPTION|TCL_NAME|IMPLEMENTS|DEFAULT|GROUPS|TEST_LABELS)$")
+    if("${arg}" MATCHES "^((|COMPILE_|PRIVATE_|TEST_|)DEPENDS|DESCRIPTION|TCL_NAME|IMPLEMENTS|BACKEND|DEFAULT|GROUPS|TEST_LABELS|KIT)$")
       set(_doing "${arg}")
     elseif("${arg}" MATCHES "^EXCLUDE_FROM_ALL$")
       set(_doing "")
@@ -63,6 +67,9 @@ macro(vtk_module _name)
     elseif("${arg}" MATCHES "^EXCLUDE_FROM_WRAPPING$")
       set(_doing "")
       set(${vtk-module}_EXCLUDE_FROM_WRAPPING 1)
+    elseif("${arg}" MATCHES "^EXCLUDE_FROM_\([A-Z]+\)_WRAPPING$")
+      set(_doing "")
+      set(${vtk-module}_EXCLUDE_FROM_${CMAKE_MATCH_1}_WRAPPING 1)
     elseif("${arg}" MATCHES "^EXCLUDE_FROM_WRAP_HIERARCHY$")
       set(_doing "")
       set(${vtk-module}_EXCLUDE_FROM_WRAP_HIERARCHY 1)
@@ -89,6 +96,17 @@ macro(vtk_module _name)
     elseif("${_doing}" MATCHES "^IMPLEMENTS$")
       list(APPEND ${vtk-module}_DEPENDS "${arg}")
       list(APPEND ${vtk-module}_IMPLEMENTS "${arg}")
+    elseif("${_doing}" MATCHES "^BACKEND$")
+      # Backends control groups of implementation modules, a module may be in
+      # multiple groups, and it should be an implementation of an interface
+      # module. The current BACKENDS are OpenGL and OpenGL2 (new rendering).
+      if(NOT DEFINED VTK_BACKEND_${arg}_MODULES)
+        list(APPEND VTK_BACKENDS ${arg})
+      endif()
+      list(APPEND VTK_BACKEND_${arg}_MODULES ${vtk-module})
+      list(APPEND ${vtk-module}_BACKEND "${arg}")
+      # Being a backend implicitly excludes from all (mutual exclusivity).
+      set(${vtk-module}_EXCLUDE_FROM_ALL 1)
     elseif("${_doing}" MATCHES "^DEFAULT")
       message(FATAL_ERROR "Invalid argument [DEFAULT]")
     elseif("${_doing}" MATCHES "^GROUPS")
@@ -97,6 +115,8 @@ macro(vtk_module _name)
         list(APPEND VTK_GROUPS ${arg})
       endif()
       list(APPEND VTK_GROUP_${arg}_MODULES ${vtk-module})
+    elseif("${_doing}" MATCHES "^KIT$")
+      set(${vtk-module}_KIT "${arg}")
     else()
       set(_doing "")
       message(AUTHOR_WARNING "Unknown argument [${arg}]")
@@ -111,7 +131,8 @@ macro(vtk_module _name)
   list(SORT ${vtk-module}_DEPENDS) # Deterministic order.
   list(SORT ${vtk-module-test}_DEPENDS) # Deterministic order.
   list(SORT ${vtk-module}_IMPLEMENTS) # Deterministic order.
-  if(NOT ${vtk-module}_EXCLUDE_FROM_WRAPPING AND
+  if(NOT (${vtk-module}_EXCLUDE_FROM_WRAPPING OR
+          ${vtk-module}_EXCLUDE_FROM_TCL_WRAPPING) AND
       "${${vtk-module}_TCL_NAME}" MATCHES "[0-9]")
     message(AUTHOR_WARNING "Specify a TCL_NAME with no digits.")
   endif()
@@ -170,6 +191,42 @@ macro(vtk_module_impl)
 
   if(${vtk-module}_THIRD_PARTY)
     vtk_module_warnings_disable(C CXX)
+  endif()
+endmacro()
+
+# vtk_module_export_code_find_package(<name>)
+#
+# Add code that runs when the module is loaded in an application
+# to find the given package in the same place VTK found it.
+# This is useful for finding external dependencies that provide
+# imported targets linked by VTK libraries.
+#
+# The <name>_DIR variable must be set to the package location.
+# The VTK_INSTALL_FIND_PACKAGE_<name>_DIR variable may be set
+# to an alternative location for the install tree to reference,
+# or to a false value to remove any default location.
+macro(vtk_module_export_code_find_package _name)
+  if(${_name}_DIR)
+    if(DEFINED VTK_INSTALL_FIND_PACKAGE_${_name}_DIR)
+      set(_dir "${VTK_INSTALL_FIND_PACKAGE_${_name}_DIR}")
+    else()
+      set(_dir "${${_name}_DIR}")
+    endif()
+    if(_dir)
+      set(${vtk-module}_EXPORT_CODE_INSTALL "${${vtk-module}_EXPORT_CODE_INSTALL}
+if(NOT ${_name}_DIR)
+  set(${_name}_DIR \"${_dir}\")
+endif()")
+    endif()
+    set(${vtk-module}_EXPORT_CODE_INSTALL "${${vtk-module}_EXPORT_CODE_INSTALL}
+find_package(${_name} REQUIRED QUIET)
+")
+    set(${vtk-module}_EXPORT_CODE_BUILD "${${vtk-module}_EXPORT_CODE_BUILD}
+if(NOT ${_name}_DIR)
+  set(${_name}_DIR \"${${_name}_DIR}\")
+endif()
+find_package(${_name} REQUIRED QUIET)
+")
   endif()
 endmacro()
 
@@ -364,19 +421,32 @@ macro(vtk_target_export _name)
   set_property(GLOBAL APPEND PROPERTY VTK_TARGETS ${_name})
 endmacro()
 
-macro(vtk_target_install _name)
+function(vtk_target_install _name)
   if(NOT VTK_INSTALL_NO_LIBRARIES)
     if(APPLE AND VTK_JAVA_INSTALL)
        set_target_properties(${_name} PROPERTIES SUFFIX ".jnilib")
     endif(APPLE AND VTK_JAVA_INSTALL)
+    if(VTK_INSTALL_NO_DEVELOPMENT)
+      # Installation for deployment does not need static libraries.
+      get_property(_type TARGET ${_name} PROPERTY TYPE)
+      if(_type STREQUAL "STATIC_LIBRARY")
+        return()
+      endif()
+      set(_archive_destination "")
+    else()
+      # Installation for development needs static libraries.
+      set(_archive_destination
+        ARCHIVE DESTINATION ${VTK_INSTALL_ARCHIVE_DIR} COMPONENT Development
+        )
+    endif()
     install(TARGETS ${_name}
       EXPORT ${VTK_INSTALL_EXPORT_NAME}
       RUNTIME DESTINATION ${VTK_INSTALL_RUNTIME_DIR} COMPONENT RuntimeLibraries
       LIBRARY DESTINATION ${VTK_INSTALL_LIBRARY_DIR} COMPONENT RuntimeLibraries
-      ARCHIVE DESTINATION ${VTK_INSTALL_ARCHIVE_DIR} COMPONENT Development
+      ${_archive_destination}
       )
   endif()
-endmacro()
+endfunction()
 
 macro(vtk_target _name)
   set(_install 1)
@@ -446,7 +516,9 @@ endmacro()
 
 function(vtk_add_library name)
   add_library(${name} ${ARGN} ${headers})
-  vtk_target(${name})
+  if(NOT ARGV1 STREQUAL OBJECT)
+    vtk_target(${name})
+  endif()
 endfunction()
 
 function(vtk_add_executable name)
@@ -516,7 +588,7 @@ function(vtk_module_library name)
   if(NOT ${vtk-module}_EXCLUDE_FROM_WRAPPING AND
       NOT ${vtk-module}_EXCLUDE_FROM_WRAP_HIERARCHY AND
       ( VTK_WRAP_PYTHON OR VTK_WRAP_TCL OR VTK_WRAP_JAVA ))
-    set(_hierarchy ${CMAKE_CURRENT_BINARY_DIR}/${vtk-module}Hierarchy.stamp)
+    set(_hierarchy ${CMAKE_CURRENT_BINARY_DIR}/${vtk-module}Hierarchy.stamp.txt)
   else()
     set(_hierarchy "")
   endif()
@@ -529,9 +601,41 @@ function(vtk_module_library name)
     set(_help_vs7 0)
   endif()
 
-  vtk_add_library(${vtk-module} ${ARGN} ${_hdrs} ${_instantiator_SRCS} ${_hierarchy})
+  set(target_suffix)
+  set(force_object)
+  set(export_symbol_object)
+  if(_vtk_build_as_kit)
+    # Hack up the target name to end with 'Objects' and make it an OBJECT
+    # library.
+    set(target_suffix Objects)
+    set(force_object ${target_suffix} OBJECT)
+    set(export_symbol_object ${target_suffix} BASE_NAME ${vtk-module})
+    # OBJECT libraries don't like this variable being set; clear it.
+    unset(${vtk-module}_LIB_DEPENDS CACHE)
+  endif()
+  vtk_add_library(${vtk-module}${force_object} ${ARGN} ${_hdrs} ${_instantiator_SRCS} ${_hierarchy})
+  if(_vtk_build_as_kit)
+    # Make an interface library to link with for libraries.
+    add_library(${vtk-module} INTERFACE)
+    vtk_target_export(${vtk-module})
+    vtk_target_install(${vtk-module})
+    set_target_properties(${vtk-module}
+      PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${_vtk_build_as_kit}")
+    if(BUILD_SHARED_LIBS)
+      # Define a kit-wide export symbol for the objects in this module.
+      set_property(TARGET ${vtk-module}Objects APPEND
+        PROPERTY
+          COMPILE_DEFINITIONS ${${vtk-module}_KIT}_EXPORTS)
+      set_target_properties(${vtk-module}Objects
+        PROPERTIES
+          # Tell generate_export_header what kit-wide export symbol we use.
+          DEFINE_SYMBOL ${${vtk-module}_KIT}_EXPORTS
+          POSITION_INDEPENDENT_CODE TRUE)
+    endif()
+  endif()
   foreach(dep IN LISTS ${vtk-module}_LINK_DEPENDS)
-    target_link_libraries(${vtk-module} LINK_PUBLIC ${${dep}_LIBRARIES})
+    vtk_module_link_libraries(${vtk-module} LINK_PUBLIC ${${dep}_LIBRARIES})
     if(_help_vs7 AND ${dep}_LIBRARIES)
       add_dependencies(${vtk-module} ${${dep}_LIBRARIES})
     endif()
@@ -545,7 +649,7 @@ function(vtk_module_library name)
     if(${dep}_LIBRARY_DIRS)
       link_directories(${${dep}_LIBRARY_DIRS})
     endif()
-    target_link_libraries(${vtk-module} LINK_PRIVATE ${${dep}_LIBRARIES})
+    vtk_module_link_libraries(${vtk-module} LINK_PRIVATE ${${dep}_LIBRARIES})
     if(_help_vs7 AND ${dep}_LIBRARIES)
       add_dependencies(${vtk-module} ${${dep}_LIBRARIES})
     endif()
@@ -587,15 +691,18 @@ VTK_AUTOINIT(${vtk-module})
   endif()
 
   # Generate the export macro header for symbol visibility/Windows DLL declspec
-  generate_export_header(${vtk-module} EXPORT_FILE_NAME ${vtk-module}Module.h)
-  get_property(_buildtype TARGET ${vtk-module} PROPERTY TYPE)
-  if (NOT "${_buildtype}" STREQUAL STATIC_LIBRARY)
+  if(target_suffix)
+    set(${vtk-module}${target_suffix}_EXPORT_CODE
+      ${${vtk-module}_EXPORT_CODE})
+  endif()
+  generate_export_header(${vtk-module}${export_symbol_object} EXPORT_FILE_NAME ${vtk-module}Module.h)
+  if (BUILD_SHARED_LIBS)
     # export flags are only added when building shared libs, they cause
     # mismatched visibility warnings when building statically since not all
     # libraries that VTK builds don't set visibility flags. Until we get a
     # time to do that, we skip visibility flags for static libraries.
     add_compiler_export_flags(my_abi_flags)
-    set_property(TARGET ${vtk-module} APPEND
+    set_property(TARGET ${vtk-module}${target_suffix} APPEND
       PROPERTY COMPILE_FLAGS "${my_abi_flags}")
   endif()
 
@@ -643,6 +750,23 @@ VTK_AUTOINIT(${vtk-module})
       DESTINATION ${VTK_INSTALL_INCLUDE_DIR}
       COMPONENT Development
       )
+  endif()
+endfunction()
+
+function(vtk_module_link_libraries module)
+  if(VTK_ENABLE_KITS AND ${module}_KIT)
+    set_property(GLOBAL APPEND
+      PROPERTY
+        ${${module}_KIT}_LIBS ${ARGN})
+    foreach(dep IN LISTS ARGN)
+      if(TARGET ${dep}Objects)
+        add_dependencies(${module}Objects ${dep}Objects)
+      elseif(TARGET ${dep})
+        add_dependencies(${module}Objects ${dep})
+      endif()
+    endforeach()
+  else()
+    target_link_libraries(${module} ${ARGN})
   endif()
 endfunction()
 

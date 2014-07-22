@@ -21,6 +21,7 @@
 #include "vtkContext2D.h"
 #include "vtkContextMapper2D.h"
 #include "vtkDoubleArray.h"
+#include "vtkIdTypeArray.h"
 #include "vtkLookupTable.h"
 #include "vtkObjectFactory.h"
 #include "vtkPen.h"
@@ -154,6 +155,7 @@ bool vtkPlotFunctionalBag::UpdateTableCache(vtkTable *table)
         this->BagPoints->SetPoint(2 * i, x, y[0]);
         this->BagPoints->SetPoint(2 * i + 1, x, y[1]);
         }
+      this->BagPoints->Modified();
       }
     }
 

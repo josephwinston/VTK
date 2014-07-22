@@ -33,7 +33,7 @@
 #include "vtkOverlappingAMR.h"
 #include "vtkAMRInterpolatedVelocityField.h"
 #include "vtkUniformGrid.h"
-#include "vtkAMRUtilities.h"
+#include "vtkParallelAMRUtilities.h"
 #include "vtkMath.h"
 #include "vtkCompositeDataIterator.h"
 #include "vtkNew.h"
@@ -843,7 +843,7 @@ public:
     AssertNe(this->InputData,NULL);
     this->AMR = vtkOverlappingAMR::SafeDownCast(this->InputData);
 
-    vtkAMRUtilities::DistributeProcessInformation(this->AMR, this->Controller, BlockProcess);
+    vtkParallelAMRUtilities::DistributeProcessInformation(this->AMR, this->Controller, BlockProcess);
     this->AMR->GenerateParentChildInformation();
   }
 
@@ -900,6 +900,7 @@ namespace
 
   }
 
+#ifdef DEBUGTRACE
   inline double ComputeLength(vtkIdList* poly, vtkPoints* pts)
   {
     int n = poly->GetNumberOfIds();
@@ -919,20 +920,6 @@ namespace
     return s;
   }
 
-  inline int ComputePointDataSize(vtkPointData* data)
-  {
-    int size(0);
-    int numArrays(data->GetNumberOfArrays());
-    for(int i=0; i<numArrays;i++)
-      {
-      vtkDataArray* arr = data->GetArray(i);
-      int numComponents = arr->GetNumberOfComponents();
-      size+=numComponents;
-      }
-
-    return size;
-  }
-
   inline void PrintNames(ostream& out, vtkPointData* a)
   {
     for(int i=0; i<a->GetNumberOfArrays();i++)
@@ -941,6 +928,7 @@ namespace
       }
     out<<endl;
   }
+
   inline bool SameShape(vtkPointData* a, vtkPointData* b)
   {
     if (!a || !b)
@@ -966,6 +954,7 @@ namespace
 
     return true;
   }
+#endif
 
   class MessageBuffer
   {
@@ -1542,17 +1531,6 @@ int vtkPStreamTracer::RequestUpdateExtent(
   return 1;
 }
 
-int vtkPStreamTracer::RequestInformation(
-  vtkInformation *vtkNotUsed(request),
-  vtkInformationVector **vtkNotUsed(inputVector),
-  vtkInformationVector *outputVector)
-{
-  vtkInformation *outInfo = outputVector->GetInformationObject(0);
-  outInfo->Set(vtkStreamingDemandDrivenPipeline::MAXIMUM_NUMBER_OF_PIECES(), -1);
-
-  return 1;
-}
-
 int vtkPStreamTracer::RequestData(
   vtkInformation *request,
   vtkInformationVector **inputVector,
@@ -1643,12 +1621,6 @@ int vtkPStreamTracer::RequestData(
   while( (task = taskManager.NextTask()))
     {
     iterations++;
-    int res = this->CheckInputs(func, &maxCellSize);
-    if (res!=VTK_OK)
-      {
-      vtkErrorMacro("No appropriate inputs have been found.");
-      continue;
-      }
     PStreamTracerPoint* point = task->GetPoint();
 
     vtkSmartPointer<vtkPolyData> traceOut;
@@ -1694,10 +1666,6 @@ int vtkPStreamTracer::RequestData(
 
     traceIds.push_back(task->GetId());
     traceOutputs.push_back(traceOut);
-    if(func)
-      {
-      func->Delete();
-      }
     }
 
   this->Controller->Barrier();

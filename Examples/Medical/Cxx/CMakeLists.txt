@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 2.8.5 FATAL_ERROR)
 if(POLICY CMP0025)
   cmake_policy(SET CMP0025 NEW) # CMake 3.0
 endif()
+if(POLICY CMP0053)
+  cmake_policy(SET CMP0053 NEW) # CMake 3.1
+endif()
 
 PROJECT (Medical)
 
@@ -41,12 +44,14 @@ if(BUILD_TESTING)
     set(TestMedical2_ARGS ${VTK_TEST_DATA_DIR}/Data/headsq/quarter)
     set(TestMedical3_ARGS ${VTK_TEST_DATA_DIR}/Data/headsq/quarter)
     set(TestMedical4_ARGS ${VTK_TEST_DATA_DIR}/Data/headsq/quarter)
-    vtk_add_test_cxx(
+    vtk_add_test_cxx(${vtk-example}CxxTests tests
       TestMedical1.cxx
       TestMedical2.cxx
       TestMedical3.cxx
       TestMedical4.cxx
       )
-    vtk_test_cxx_executable(${vtk-example}CxxTests RENDERING_FACTORY)
+    vtk_test_cxx_executable(${vtk-example}CxxTests tests
+      RENDERING_FACTORY
+      )
   endif()
 endif()

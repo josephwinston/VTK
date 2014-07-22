@@ -2367,10 +2367,6 @@ int vtkLSDynaReader::RequestInformation( vtkInformation* vtkNotUsed(request),
   timeRange[1] = p->TimeValues[p->TimeValues.size() - 1];
   outInfo->Set( vtkStreamingDemandDrivenPipeline::TIME_RANGE(), timeRange, 2 );
 
-  // Currently, this is a serial reader.
-  outInfo->Set(
-    vtkStreamingDemandDrivenPipeline::MAXIMUM_NUMBER_OF_PIECES(), 1);
-
   return 1;
 }
 
@@ -2427,9 +2423,11 @@ int vtkLSDynaReader::ReadNodes()
   LSDynaMetaData* p = this->P;
 
   // Skip reading coordinates if we are deflecting the mesh... they would be replaced anyway.
-  // Note that we still have to read the rigid road coordinates.
+  // The only exception is if the deflected coordinates are not included in the LS-Dyna output
+  // (i.e., when IU is 0).
+  // Note that in any event we still have to read the rigid road coordinates.
   // If the mesh is deformed each state will have the points so see ReadState
-  if ( ! this->DeformedMesh )
+  if ( ! this->DeformedMesh || ! p->Dict["IU"] )
     {
     p->Fam.SkipToWord( LSDynaFamily::GeometryData, p->Fam.GetCurrentAdaptLevel(), 0 );
     this->Parts->ReadPointProperty(p->NumberOfNodes,p->Dimensionality,NULL,false,true,false);

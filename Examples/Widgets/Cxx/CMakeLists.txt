@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 2.8.5 FATAL_ERROR)
 if(POLICY CMP0025)
   cmake_policy(SET CMP0025 NEW) # CMake 3.0
 endif()
+if(POLICY CMP0053)
+  cmake_policy(SET CMP0053 NEW) # CMake 3.1
+endif()
 
 project (Widgets)
 
@@ -28,11 +31,13 @@ if(BUILD_TESTING)
   if(vtkTestingRendering_LOADED)
     ######## Regression Testing ########
     set(vtk-example WidgetsExamples)
-    vtk_add_test_cxx(
+    vtk_add_test_cxx(${vtk-example}CxxTests tests
       TestSlider.cxx
       TestSlider2D.cxx
       TestBalloonWidget.cxx
       )
-    vtk_test_cxx_executable(${vtk-example}CxxTests RENDERING_FACTORY)
+    vtk_test_cxx_executable(${vtk-example}CxxTests tests
+      RENDERING_FACTORY
+      )
   endif()
 endif()
